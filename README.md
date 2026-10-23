@@ -2,9 +2,14 @@
 
 OrbitalLens is a web application that tracks the International Space Station (ISS, NORAD catalog 25544) in real time, visualizes its past and future ground track on a world map, and predicts upcoming passes over any observer location on Earth.
 
-Built as a BCA student project with simple, clean, and readable code designed for interview discussions.
+---
+
+## Screenshots 
+<img width="1919" height="1079" alt="Screenshot 2026-10-23 195432" src="https://github.com/user-attachments/assets/24f374f6-3b70-4ede-b7be-4ada8b99f80c" />
 
 ---
+
+<img width="1919" height="1079" alt="Screenshot 2026-10-23 195451" src="https://github.com/user-attachments/assets/0d60933f-7c9e-43c4-bc0c-bf0c9819f3ae" />
 
 ## Features
 
