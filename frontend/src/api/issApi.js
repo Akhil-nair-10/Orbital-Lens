@@ -5,7 +5,7 @@ import axios from "axios";
  * Uses a 15-second timeout and passes through Vite's dev proxy (/api -> http://127.0.0.1:8080).
  */
 const apiClient = axios.create({
-  baseURL: "/api",
+  baseURL: import.meta.env.VITE_API_BASE_URL || "/api",
   timeout: 15000,
 });
 
