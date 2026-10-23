@@ -259,7 +259,5 @@ Map tiles are provided by &copy; [OpenStreetMap](https://www.openstreetmap.org/c
 - Comprehensive JUnit 5 and MockMvc tests.
 
 ### Planned for Future Versions
-- Docker and container deployment configuration.
 - Multi-satellite support (Tiangong space station, Hubble, Landsat).
 - Visual pass filtering (sunlight vs eclipse illumination calculation).
-- Automated frontend unit and component tests.
