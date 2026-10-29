@@ -5,6 +5,7 @@ package com.orbitallens.backend.tle;
  */
 public enum TleSource {
     CELESTRAK,
+    MIRROR,
     CACHE_FILE,
     BUNDLED_SAMPLE
 }

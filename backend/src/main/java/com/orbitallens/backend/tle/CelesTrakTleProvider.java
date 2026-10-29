@@ -20,8 +20,9 @@ import java.time.Instant;
 import java.util.List;
 
 /**
- * Manages fetching, disk caching, cooldowns, and fallbacks for ISS TLE data.
- * Adheres strictly to CelesTrak usage guidelines by honoring cooldowns and caching.
+ * Fetches ISS TLE data with this priority:
+ * CelesTrak -> mirror (GitHub raw file) -> in-memory -> disk cache -> bundled sample.
+ * Honors cache TTL and failure cooldown so remote servers are not hammered.
  */
 @Component
 public class CelesTrakTleProvider implements TleProvider {
@@ -29,6 +30,7 @@ public class CelesTrakTleProvider implements TleProvider {
     private static final Logger log = LoggerFactory.getLogger(CelesTrakTleProvider.class);
 
     private final String tleUrl;
+    private final String mirrorUrl;
     private final long cacheTtlMinutes;
     private final long failureCooldownMinutes;
     private final String cacheFilePath;
@@ -42,18 +44,21 @@ public class CelesTrakTleProvider implements TleProvider {
 
     public CelesTrakTleProvider(
             @Value("${orbitallens.tle.url}") String tleUrl,
+            @Value("${orbitallens.tle.mirror-url:}") String mirrorUrl,
             @Value("${orbitallens.tle.cache-ttl-minutes}") long cacheTtlMinutes,
             @Value("${orbitallens.tle.failure-cooldown-minutes}") long failureCooldownMinutes,
             @Value("${orbitallens.tle.cache-file}") String cacheFilePath,
             @Value("${orbitallens.tle.http-timeout-seconds}") long httpTimeoutSeconds
     ) {
         this.tleUrl = tleUrl;
+        this.mirrorUrl = mirrorUrl == null ? "" : mirrorUrl.trim();
         this.cacheTtlMinutes = cacheTtlMinutes;
         this.failureCooldownMinutes = failureCooldownMinutes;
         this.cacheFilePath = cacheFilePath;
         this.httpTimeoutSeconds = httpTimeoutSeconds;
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(httpTimeoutSeconds))
+                .followRedirects(HttpClient.Redirect.NORMAL)
                 .build();
     }
 
@@ -61,48 +66,33 @@ public class CelesTrakTleProvider implements TleProvider {
     public synchronized TleSnapshot current() {
         Instant now = Instant.now();
 
-        // 1. If an in-memory TLE was fetched less than cache-ttl-minutes ago, return it
+        // 1. Fresh enough in memory -> reuse
         if (inMemorySnapshot != null && lastFetchTime != null
                 && Duration.between(lastFetchTime, now).toMinutes() < cacheTtlMinutes) {
             return inMemorySnapshot;
         }
 
-        // 2. If the last failure was less than failure-cooldown-minutes ago, skip the network
-        boolean skipNetwork = (lastFailureTime != null
-                && Duration.between(lastFailureTime, now).toMinutes() < failureCooldownMinutes);
+        // 2. Recent failure -> skip network for a while
+        boolean skipNetwork = lastFailureTime != null
+                && Duration.between(lastFailureTime, now).toMinutes() < failureCooldownMinutes;
 
         if (!skipNetwork) {
-            try {
-                HttpRequest request = HttpRequest.newBuilder()
-                        .uri(URI.create(tleUrl))
-                        .timeout(Duration.ofSeconds(httpTimeoutSeconds))
-                        .header("User-Agent", "OrbitalLens/1.0 (student project)")
-                        .GET()
-                        .build();
-
-                HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-
-                if (response.statusCode() == 200) {
-                    TleSnapshot snapshot = TleParser.parse(response.body(), now, TleSource.CELESTRAK);
-                    this.inMemorySnapshot = snapshot;
-                    this.lastFetchTime = now;
-                    this.lastFailureTime = null;
-
-                    writeCacheFile(snapshot);
-                    return snapshot;
-                } else {
-                    log.warn("CelesTrak returned non-200 response: {}. Cooling down for {} minutes.",
-                            response.statusCode(), failureCooldownMinutes);
-                    this.lastFailureTime = now;
-                }
-            } catch (Exception e) {
-                log.warn("Failed to fetch TLE from CelesTrak: {}. Cooling down for {} minutes.",
-                        e.getMessage(), failureCooldownMinutes);
-                this.lastFailureTime = now;
+            TleSnapshot fetched = tryFetch(tleUrl, TleSource.CELESTRAK, now);
+            if (fetched == null && !mirrorUrl.isEmpty()) {
+                fetched = tryFetch(mirrorUrl, TleSource.MIRROR, now);
             }
+            if (fetched != null) {
+                this.inMemorySnapshot = fetched;
+                this.lastFetchTime = now;
+                this.lastFailureTime = null;
+                writeCacheFile(fetched);
+                return fetched;
+            }
+            log.warn("All TLE sources failed. Cooling down for {} minutes.", failureCooldownMinutes);
+            this.lastFailureTime = now;
         }
 
-        // 3. Fallbacks in order: in-memory -> cache file -> bundled sample
+        // 3. Fallbacks: in-memory -> cache file -> bundled sample
         if (inMemorySnapshot != null) {
             return inMemorySnapshot;
         }
@@ -119,7 +109,38 @@ public class CelesTrakTleProvider implements TleProvider {
             return fromBundled;
         }
 
-        throw new TleUnavailableException("Failed to acquire ISS TLE data from CelesTrak, cache file, or bundled sample.");
+        throw new TleUnavailableException("Failed to acquire ISS TLE data from any source.");
+    }
+
+    /** Returns a parsed snapshot, or null (after logging the reason) on any failure. */
+    private TleSnapshot tryFetch(String url, TleSource source, Instant now) {
+        try {
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .timeout(Duration.ofSeconds(httpTimeoutSeconds))
+                    .header("User-Agent", "OrbitalLens/1.0 (student project)")
+                    .GET()
+                    .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            String body = response.body() == null ? "" : response.body();
+
+            if (response.statusCode() != 200) {
+                String snippet = body.substring(0, Math.min(200, body.length())).replace('\n', ' ');
+                log.warn("TLE source {} ({}) returned HTTP {} body='{}'", source, url, response.statusCode(), snippet);
+                return null;
+            }
+            TleSnapshot snapshot = TleParser.parse(body, now, source);
+            log.info("Fetched TLE from {} (epoch {})", source, snapshot.epoch());
+            return snapshot;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.warn("TLE fetch from {} interrupted", source);
+            return null;
+        } catch (Exception e) {
+            log.warn("TLE fetch from {} ({}) failed: {}", source, url, e.toString());
+            return null;
+        }
     }
 
     private void writeCacheFile(TleSnapshot snapshot) {
