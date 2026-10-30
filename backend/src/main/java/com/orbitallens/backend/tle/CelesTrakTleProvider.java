@@ -57,7 +57,7 @@ public class CelesTrakTleProvider implements TleProvider {
         this.cacheFilePath = cacheFilePath;
         this.httpTimeoutSeconds = httpTimeoutSeconds;
         this.httpClient = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(httpTimeoutSeconds))
+                .connectTimeout(Duration.ofSeconds(20))
                 .followRedirects(HttpClient.Redirect.NORMAL)
                 .build();
     }
@@ -72,14 +72,17 @@ public class CelesTrakTleProvider implements TleProvider {
             return inMemorySnapshot;
         }
 
-        // 2. Recent failure -> skip network for a while
+        // 2. Recent failure -> skip network for a while.
+        // If we only have the bundled sample (or nothing), retry after 1 minute instead of the full cooldown.
+        boolean haveRealData = inMemorySnapshot != null && inMemorySnapshot.source() != TleSource.BUNDLED_SAMPLE;
+        long cooldownMinutes = haveRealData ? failureCooldownMinutes : 1;
         boolean skipNetwork = lastFailureTime != null
-                && Duration.between(lastFailureTime, now).toMinutes() < failureCooldownMinutes;
+                && Duration.between(lastFailureTime, now).toMinutes() < cooldownMinutes;
 
         if (!skipNetwork) {
-            TleSnapshot fetched = tryFetch(tleUrl, TleSource.CELESTRAK, now);
+            TleSnapshot fetched = tryFetch(tleUrl, TleSource.CELESTRAK, now, 3);
             if (fetched == null && !mirrorUrl.isEmpty()) {
-                fetched = tryFetch(mirrorUrl, TleSource.MIRROR, now);
+                fetched = tryFetch(mirrorUrl, TleSource.MIRROR, now, 20);
             }
             if (fetched != null) {
                 this.inMemorySnapshot = fetched;
@@ -88,7 +91,7 @@ public class CelesTrakTleProvider implements TleProvider {
                 writeCacheFile(fetched);
                 return fetched;
             }
-            log.warn("All TLE sources failed. Cooling down for {} minutes.", failureCooldownMinutes);
+            log.warn("All TLE sources failed. Retrying in {} minute(s).", cooldownMinutes);
             this.lastFailureTime = now;
         }
 
@@ -113,11 +116,11 @@ public class CelesTrakTleProvider implements TleProvider {
     }
 
     /** Returns a parsed snapshot, or null (after logging the reason) on any failure. */
-    private TleSnapshot tryFetch(String url, TleSource source, Instant now) {
+    private TleSnapshot tryFetch(String url, TleSource source, Instant now, long timeoutSeconds) {
         try {
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(url))
-                    .timeout(Duration.ofSeconds(httpTimeoutSeconds))
+                    .timeout(Duration.ofSeconds(timeoutSeconds))
                     .header("User-Agent", "OrbitalLens/1.0 (student project)")
                     .GET()
                     .build();

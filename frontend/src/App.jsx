@@ -6,6 +6,7 @@ import MapView from "./components/MapView.jsx";
 import SidePanel from "./components/SidePanel.jsx";
 import PassList from "./components/PassList.jsx";
 import ElevationChart from "./components/ElevationChart.jsx";
+import ColdStartModal from "./components/ColdStartModal.jsx";
 
 /**
  * Root application component orchestrating state, background polling,
@@ -132,6 +133,8 @@ function App() {
 
   return (
     <>
+      <ColdStartModal isConnected={currentPosition !== null} />
+
       <Header tleInfo={tleInfo} />
 
       <Banner
